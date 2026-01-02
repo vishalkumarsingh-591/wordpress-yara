@@ -725,3 +725,93 @@ rule wp_open_redirect_allowlist_missing
     condition:
         filesize < 2048KB and $s_param and not $s_validate
 }
+
+rule wordpress_direct_file_access
+{
+    meta:
+        description = "Detect possible missing ABSPATH guard (direct file access)"
+        category = "Direct File Access"
+    strings:
+        $s_php_open = /<\?php/                            /* PHP opening tag */
+        $s_defined_abspath = /defined\s*\(\s*['"]ABSPATH['"]\s*\)/i
+    condition:
+        filesize < 10MB and $s_php_open and not $s_defined_abspath
+}
+
+rule wp_auth_bypass_user_lookup_from_input
+{
+    meta:
+        description = "Detects authentication bypass via user-controlled identifier (id/email/login)"
+        severity = "critical"
+        category = "authentication"
+        cwe = "CWE-287"
+        confidence = "very high"
+        platform = "wordpress"
+
+    strings:
+        /* User input sources */
+        $input_post = /\$_POST\s*\[\s*['"].*(id|user_id|userid|email|mail|login|username).*['"]\s*\]/i
+        $input_get  = /\$_GET\s*\[\s*['"].*(id|user_id|userid|email|mail|login|username).*['"]\s*\]/i
+        $input_req  = /\$_REQUEST\s*\[\s*['"].*(id|user_id|userid|email|mail|login|username).*['"]\s*\]/i
+
+        /* User lookup */
+        $get_user_id    = /get_user_by\s*\(\s*['"]id['"]\s*,/i
+        $get_user_email = /get_user_by\s*\(\s*['"]email['"]\s*,/i
+        $get_user_login = /get_user_by\s*\(\s*['"]login['"]\s*,/i
+
+        /* Auth/session manipulation */
+        $set_user = /wp_set_current_user\s*\(/i
+        $set_auth = /wp_set_auth_cookie\s*\(/i
+
+        /* Legitimate checks (negative signals) */
+        $cap_check = "current_user_can"
+        $nonce     = "wp_verify_nonce"
+        $logged_in = "is_user_logged_in"
+
+    condition:
+        (
+            any of ($input_post, $input_get, $input_req)
+            and any of ($get_user_id, $get_user_email, $get_user_login)
+            and any of ($set_user, $set_auth)
+        )
+        and not any of ($cap_check, $nonce, $logged_in)
+}
+
+
+rule php_plaintext_password_storage
+{
+    meta:
+        description = "Detects plaintext password storage or comparison in PHP"
+        severity = "high"
+        category = "authentication"
+        cwe = "CWE-256"
+        confidence = "medium"
+
+    strings:
+        /* Password variables */
+        $pwd_var1 = /\$password\s*=/ nocase
+        $pwd_var2 = /\$pass\s*=/ nocase
+        $pwd_var3 = /\$pwd\s*=/ nocase
+
+        /* DB write patterns */
+        $db_insert1 = /INSERT\s+INTO\s+.*password/i
+        $db_insert2 = /UPDATE\s+.*SET\s+password/i
+        $wpdb_write = /\$wpdb->(insert|update)\s*\(/i
+
+        /* Direct comparison */
+        $compare1 = /\$password\s*==/ nocase
+        $compare2 = /\$password\s*===/ nocase
+
+        /* Absence indicators (negative heuristics) */
+        $hash_safe1 = "password_hash"
+        $hash_safe2 = "wp_hash_password"
+        $hash_safe3 = "password_verify"
+
+    condition:
+        (
+            any of ($pwd_var*)
+            and any of ($db_insert*, $wpdb_write, $compare*)
+        )
+        and not any of ($hash_safe*)
+}
+
