@@ -1,217 +1,144 @@
 /* =========================================================
-   Active Directory / User Sync Vulnerability Detection
+   Active Directory / LDAP / SCIM user-sync rules
+   Per-file prefix: ad_
    ========================================================= */
 
-
-/* ---------------------------------------------------------
-   LDAP Injection
-   --------------------------------------------------------- */
-
-rule LDAP_Injection_Filter
+rule ad_ldap_filter_built_with_variable
 {
     meta:
-        description = "Possible LDAP injection in filter construction"
-        category = "AD/LDAP"
-        severity = "high"
+        description = "LDAP filter constructed with a PHP variable for uid/cn/mail/userPrincipalName"
+        category    = "AD/LDAPi"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $ldap = /(ldap_search|ldap_bind|ldap_query)/i
-        $filter = /\(\s*(uid|cn|mail|userPrincipalName)\s*=\s*\$\w+/i
+        $ldap   = /\bldap_(search|bind|list|read|modify)\s*\(/ nocase
+        $filter = /\(\s*(uid|cn|mail|sAMAccountName|userPrincipalName)\s*=\s*['"]?\$\w+/ nocase
+        $escape = /ldap_escape\s*\(/ nocase
 
     condition:
-        filesize < 5MB and $ldap and $filter
+        filesize < 5MB and $ldap and $filter and not $escape
 }
 
-
-
-/* ---------------------------------------------------------
-   Dynamic LDAP Filter from User Input
-   --------------------------------------------------------- */
-
-rule LDAP_Filter_User_Input
+rule ad_ldap_filter_from_request_input
 {
     meta:
-        description = "LDAP filter built using request parameters"
-        category = "AD/LDAP"
-        severity = "high"
+        description = "LDAP filter or ldap_search built directly from $_GET/$_POST/$_REQUEST"
+        category    = "AD/LDAPi"
+        severity    = "high"
+        confidence  = "high"
 
     strings:
-        $filter1 = /\(\s*(uid|mail|cn)\s*=\s*\$_(GET|POST|REQUEST)/i
-        $filter2 = /ldap_search\s*\(.*\$_(GET|POST|REQUEST)/i
+        $f1 = /\(\s*(uid|cn|mail|sAMAccountName)\s*=\s*\$_(GET|POST|REQUEST)/ nocase
+        $f2 = /ldap_search\s*\([^)]*\$_(GET|POST|REQUEST)/ nocase
+        $escape = /ldap_escape\s*\(/ nocase
 
     condition:
-        filesize < 5MB and any of ($filter*)
+        filesize < 5MB and any of ($f*) and not $escape
 }
 
-
-
-/* ---------------------------------------------------------
-   Auto User Creation From AD
-   --------------------------------------------------------- */
-
-rule AD_Auto_User_Creation
+rule ad_admin_role_assigned_from_group_attribute
 {
     meta:
-        description = "User automatically created from AD attributes"
-        category = "User Sync"
-        severity = "medium"
+        description = "Group/memberOf attribute mapped to administrator role assignment"
+        category    = "AD/PrivEsc"
+        severity    = "critical"
+        confidence  = "medium"
 
     strings:
-        $create1 = /(create_user|wp_create_user|add_user)/i
-        $attr = /(mail|userPrincipalName|displayName)/i
+        $group   = /(memberOf|groupMembership)/ nocase
+        $admin   = /['"](administrator|admin_role|ROLE_ADMIN)['"]/ nocase
+        $assign  = /(set_role|add_role|wp_update_user|wp_insert_user|assign_role)\s*\(/ nocase
 
     condition:
-        filesize < 10MB and $create1 and $attr
+        filesize < 5MB and $group and $admin and $assign
 }
 
-
-
-/* ---------------------------------------------------------
-   Admin Role Mapping From AD Group
-   --------------------------------------------------------- */
-
-rule AD_Admin_Role_Mapping
+rule ad_user_created_from_request_email_or_username
 {
     meta:
-        description = "AD group mapped directly to admin role"
-        category = "Privilege Escalation"
-        severity = "critical"
+        description = "User created with email/username taken from $_POST/$_GET/$_REQUEST without sanitize_*"
+        category    = "AD/UserSync"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $group = /(memberOf|group|roleMapping)/i
-        $admin = /(administrator|admin_role|ROLE_ADMIN)/i
+        $source   = /\$_(POST|GET|REQUEST)\s*\[\s*['"](email|mail|username|user_login)['"]\s*\]/ nocase
+        $create   = /\b(wp_create_user|wp_insert_user|add_user)\s*\(/ nocase
+        $sanitize = /\b(sanitize_email|sanitize_user|is_email)\s*\(/ nocase
 
     condition:
-        filesize < 5MB and $group and $admin
+        filesize < 5MB and $source and $create and not $sanitize
 }
 
-
-
-/* ---------------------------------------------------------
-   Blind Trust in IdP Attributes
-   --------------------------------------------------------- */
-
-rule IdP_Attribute_Trust
+rule ad_password_from_ldap_stored_in_db
 {
     meta:
-        description = "Blindly trusting IdP attributes for user creation"
-        category = "User Sync"
-        severity = "high"
+        description = "Password value pulled from LDAP write path stored via update_user_meta / INSERT"
+        category    = "AD/PasswordExposure"
+        severity    = "critical"
+        confidence  = "medium"
 
     strings:
-        $attr1 = /(email|mail|username)/i
-        $sink = /(create_user|add_user|update_user)/i
-        $source = /\$_(POST|GET|REQUEST)\[['"](email|mail|username)['"]\]/i
+        $ldap   = /\bldap_(search|bind|get_entries|first_entry|read)\s*\(/ nocase
+        $pwd    = /\$(password|pwd|userPassword|pwdLastSet)\b/ nocase
+        $store1 = /update_user_meta\s*\(/ nocase
+        $store2 = /INSERT\s+INTO/ nocase
+        $hash   = /(password_hash|wp_hash_password)\s*\(/ nocase
 
     condition:
-        filesize < 5MB and $source and $sink
+        filesize < 5MB and $ldap and $pwd and ( $store1 or $store2 ) and not $hash
 }
 
-
-
-/* ---------------------------------------------------------
-   Domain Validation Missing
-   --------------------------------------------------------- */
-
-rule Missing_Email_Domain_Validation
+rule ad_ldap_uri_plaintext_no_starttls
 {
     meta:
-        description = "User email accepted without domain validation"
-        category = "User Sync"
-        severity = "medium"
+        description = "ldap:// URI used without ldap_start_tls or ldaps:// alternative"
+        category    = "AD/Transport"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $email = /(email|mail)/i
-        $create = /(create_user|add_user|wp_create_user)/i
-        $domain = /(example\.com|company\.com)/i
+        $ldap_uri    = /ldap:\/\//
+        $ldaps_uri   = /ldaps:\/\//
+        $start_tls   = /ldap_start_tls\s*\(/ nocase
 
     condition:
-        filesize < 5MB and $email and $create and not $domain
+        filesize < 2MB and $ldap_uri and not $ldaps_uri and not $start_tls
 }
 
-
-
-/* ---------------------------------------------------------
-   Password Sync Exposure
-   --------------------------------------------------------- */
-
-rule AD_Password_Sync
+rule ad_scim_endpoint_input_to_user_creation
 {
     meta:
-        description = "Possible password sync or storage from AD"
-        category = "User Sync"
-        severity = "critical"
+        description = "SCIM endpoint feeds $_POST/php://input directly into wp_create_user / wp_insert_user"
+        category    = "SCIM/UserSync"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $pass1 = /(password|pwdLastSet)/i
-        $ldap = /(ldap_search|ldap_bind)/i
-        $store = /(update_user_meta|INSERT INTO)/i
+        $scim   = /['"]\/scim(\/v2)?\/Users['"]/ nocase
+        $input1 = /\$_(POST|REQUEST)\s*\[/
+        $input2 = /php:\/\/input/
+        $create = /\b(wp_create_user|wp_insert_user|add_user)\s*\(/ nocase
+        $auth   = /(current_user_can|is_user_logged_in|Authorization|Bearer )/ nocase
 
     condition:
-        filesize < 5MB and $pass1 and $ldap and $store
+        filesize < 5MB and $scim and ( $input1 or $input2 ) and $create and not $auth
 }
 
-
-
-/* ---------------------------------------------------------
-   LDAP Connection Without TLS
-   --------------------------------------------------------- */
-
-rule LDAP_Insecure_Connection
+rule ad_group_to_role_no_allowlist_check
 {
     meta:
-        description = "LDAP connection without TLS"
-        category = "Transport"
-        severity = "high"
+        description = "memberOf used to set/add role without any 'allowed_groups'-style allowlist"
+        category    = "AD/PrivEsc"
+        severity    = "high"
+        confidence  = "low"
 
     strings:
-        $ldap = /ldap:\/\//i
-        $ldaps = /ldaps:\/\//i
+        $group    = /(memberOf|groups)/ nocase
+        $assign   = /(set_role|add_role|assign_role)\s*\(/ nocase
+        $allowlist = /(allowed_groups|group_allowlist|whitelist|valid_groups)/ nocase
 
     condition:
-        filesize < 2MB and $ldap and not $ldaps
-}
-
-
-
-/* ---------------------------------------------------------
-   SCIM User Provisioning Without Validation
-   --------------------------------------------------------- */
-
-rule SCIM_User_Provisioning_Trust
-{
-    meta:
-        description = "SCIM provisioning endpoint trusting input"
-        category = "SCIM"
-        severity = "high"
-
-    strings:
-        $scim = /(scim|Users|Groups)/i
-        $create = /(create_user|add_user|insert_user)/i
-        $input = /\$_(POST|REQUEST)/i
-
-    condition:
-        filesize < 5MB and $scim and $create and $input
-}
-
-
-
-/* ---------------------------------------------------------
-   Group Sync Without Verification
-   --------------------------------------------------------- */
-
-rule AD_Group_Sync_No_Validation
-{
-    meta:
-        description = "Group membership used without verification"
-        category = "Privilege Escalation"
-        severity = "high"
-
-    strings:
-        $group = /(memberOf|groups)/i
-        $role = /(role|permission|admin)/i
-        $assign = /(set_role|assign_role)/i
-
-    condition:
-        filesize < 5MB and $group and $role and $assign
+        filesize < 5MB and $group and $assign and not $allowlist
 }

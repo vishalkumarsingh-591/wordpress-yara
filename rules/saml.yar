@@ -1,152 +1,136 @@
-rule SAML_Missing_Signature_Validation
+/* =========================================================
+   SAML vulnerability detection
+   Per-file prefix: saml_
+   ========================================================= */
+
+rule saml_explicit_signature_validation_disabled
 {
     meta:
-        description = "Detects SAML implementations that parse assertions without validating signatures"
-        author = "Security Research"
-        severity = "high"
-        vulnerability = "SAML Signature Validation Bypass"
+        description = "Code explicitly disables SAML signature validation"
+        category    = "SAML/SigBypass"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $parse1 = "parseAssertion"
-        $parse2 = "parseResponse"
-        $parse3 = "getAssertion"
-        $parse4 = "decodeSAMLResponse"
-
-        $noverify1 = "skipSignatureValidation"
-        $noverify2 = "disableSignatureValidation"
-        $noverify3 = "validateSignature=false"
-        $noverify4 = "verifySignature(false)"
+        $d1 = "skipSignatureValidation" nocase
+        $d2 = "disableSignatureValidation" nocase
+        $d3 = /validateSignature\s*[:=]\s*false/ nocase
+        $d4 = /wantAssertionsSigned\s*[:=>]+\s*false/ nocase
+        $d5 = /wantMessagesSigned\s*[:=>]+\s*false/ nocase
+        $d6 = "allowUnsignedAssertions" nocase
+        $d7 = /requireSignedAssertions\s*[:=]\s*false/ nocase
 
     condition:
-        any of ($parse*) and any of ($noverify*)
+        filesize < 5MB and any of ($d*)
 }
 
-
-
-rule SAML_XML_Signature_Wrapping
+rule saml_xml_signature_wrapping_indexed_access
 {
     meta:
-        description = "Detects potential XML Signature Wrapping vulnerabilities in SAML handling"
-        author = "Security Research"
-        severity = "critical"
-        vulnerability = "XML Signature Wrapping (XSW)"
+        description = "SAML XML parsing pulls Assertion/Signature by tag-name index — classic XSW pattern"
+        category    = "SAML/XSW"
+        severity    = "critical"
+        confidence  = "medium"
 
     strings:
-        $xml1 = "<Assertion"
-        $xml2 = "<Signature"
-        $xml3 = "getElementsByTagName(\"Assertion\")"
-        $xml4 = "getElementsByTagName(\"Signature\")"
-        $xml5 = "document.getElementsByTagName"
-
-        $bad1 = "assertions[0]"
-        $bad2 = "signature[0]"
-        $bad3 = "selectSingleNode(\"//Assertion\")"
+        $xml1 = /getElementsByTagName\s*\(\s*['"](ns\d*:)?Assertion['"]\s*\)/ nocase
+        $xml2 = /getElementsByTagName\s*\(\s*['"](ns\d*:)?Signature['"]\s*\)/ nocase
+        $bad1 = /assertions?\s*\[\s*0\s*\]/ nocase
+        $bad2 = /signature\s*\[\s*0\s*\]/ nocase
+        $bad3 = /selectSingleNode\s*\(\s*['"]\/\/Assertion['"]\s*\)/ nocase
+        $bad4 = /->item\s*\(\s*0\s*\)/
 
     condition:
-        any of ($xml*) and any of ($bad*)
+        filesize < 5MB and ( $xml1 or $xml2 ) and any of ($bad*)
 }
 
-
-
-rule SAML_Missing_Audience_Validation
+rule saml_audience_validation_disabled
 {
     meta:
-        description = "Detects SAML code that does not validate AudienceRestriction"
-        author = "Security Research"
-        severity = "high"
-        vulnerability = "Improper Audience Validation"
+        description = "SAML AudienceRestriction validation explicitly disabled"
+        category    = "SAML/Audience"
+        severity    = "high"
+        confidence  = "high"
 
     strings:
-        $aud1 = "AudienceRestriction"
-        $aud2 = "Audience"
-
-        $missing1 = "skipAudienceValidation"
-        $missing2 = "validateAudience=false"
-        $missing3 = "disableAudienceCheck"
+        $d1 = "skipAudienceValidation" nocase
+        $d2 = /validateAudience\s*[:=]\s*false/ nocase
+        $d3 = "disableAudienceCheck" nocase
+        $d4 = /strict\s*[:=]\s*false/ nocase
 
     condition:
-        any of ($aud*) and any of ($missing*)
+        filesize < 5MB and any of ($d*)
 }
 
-
-
-rule SAML_Missing_Issuer_Validation
+rule saml_issuer_validation_disabled
 {
     meta:
-        description = "Detects SAML responses processed without validating the Issuer"
-        author = "Security Research"
-        severity = "high"
-        vulnerability = "Improper Issuer Validation"
+        description = "SAML Issuer validation explicitly disabled"
+        category    = "SAML/Issuer"
+        severity    = "high"
+        confidence  = "high"
 
     strings:
-        $issuer1 = "<Issuer>"
-        $issuer2 = "getIssuer()"
-        $issuer3 = "assertion.getIssuer"
-
-        $skip1 = "skipIssuerValidation"
-        $skip2 = "validateIssuer=false"
-        $skip3 = "disableIssuerCheck"
+        $d1 = "skipIssuerValidation" nocase
+        $d2 = /validateIssuer\s*[:=]\s*false/ nocase
+        $d3 = "disableIssuerCheck" nocase
 
     condition:
-        any of ($issuer*) and any of ($skip*)
+        filesize < 5MB and any of ($d*)
 }
 
-
-
-rule SAML_Unsigned_Assertion_Accepted
+rule saml_response_parsed_without_verify_call
 {
     meta:
-        description = "Detects code that accepts unsigned SAML assertions"
-        author = "Security Research"
-        severity = "critical"
-        vulnerability = "Unsigned Assertion Acceptance"
+        description = "SAMLResponse base64-decoded from request without any verifySignature/XMLSecurityDSig call"
+        category    = "SAML/SigVerify"
+        severity    = "high"
+        confidence  = "low"
 
     strings:
-        $unsigned1 = "allowUnsignedAssertions"
-        $unsigned2 = "acceptUnsignedAssertion"
-        $unsigned3 = "requireSignedAssertions=false"
-        $unsigned4 = "validateAssertionSignature=false"
+        $samlresp = "SAMLResponse" nocase
+        $parse    = /base64_decode\s*\(\s*\$_(POST|GET|REQUEST)\s*\[\s*['"]SAMLResponse['"]\s*\]/ nocase
+        $verify1  = /(verifySignature|validateSignature|checkSignature|XMLSecurityDSig|->verify\s*\()/ nocase
+        $verify2  = /xmlsec(_verify|tool)/ nocase
 
     condition:
-        any of ($unsigned*)
+        filesize < 5MB and $samlresp and $parse and
+        not $verify1 and not $verify2
 }
 
-
-
-rule SAML_Disabled_Certificate_Validation
+rule saml_certificate_validation_disabled
 {
     meta:
-        description = "Detects disabled certificate verification in SAML implementations"
-        author = "Security Research"
-        severity = "high"
-        vulnerability = "Certificate Validation Disabled"
+        description = "Certificate verification disabled in SAML/HTTPS setup"
+        category    = "SAML/CertValidation"
+        severity    = "high"
+        confidence  = "high"
 
     strings:
-        $cert1 = "validateCertificate=false"
-        $cert2 = "disableCertificateValidation"
-        $cert3 = "trustAllCertificates"
-        $cert4 = "setTrustAll(true)"
+        $c1 = /validateCertificate\s*[:=]\s*false/ nocase
+        $c2 = "disableCertificateValidation" nocase
+        $c3 = "trustAllCertificates" nocase
+        $c4 = /setTrustAll\s*\(\s*true/ nocase
+        $c5 = /CURLOPT_SSL_VERIFYPEER\s*,\s*(false|0)/ nocase
 
     condition:
-        any of ($cert*)
+        filesize < 5MB and any of ($c*)
 }
 
-
-
-rule SAML_RelayState_OpenRedirect
+rule saml_relaystate_unvalidated_redirect
 {
     meta:
-        description = "Detects possible open redirect through RelayState parameter"
-        author = "Security Research"
-        severity = "medium"
-        vulnerability = "RelayState Open Redirect"
+        description = "RelayState read from request and used directly in redirect without wp_safe_redirect/allowlist"
+        category    = "SAML/OpenRedirect"
+        severity    = "medium"
+        confidence  = "medium"
 
     strings:
-        $relay1 = "RelayState"
-        $relay2 = "request.getParameter(\"RelayState\")"
-        $relay3 = "redirect(request.getParameter(\"RelayState\"))"
-        $relay4 = "response.sendRedirect(relayState)"
+        $read1 = /\$_(GET|POST|REQUEST)\s*\[\s*['"]RelayState['"]\s*\]/ nocase
+        $read2 = /request\.getParameter\s*\(\s*['"]RelayState['"]/ nocase
+        $redir = /(wp_redirect|header\s*\(\s*['"]Location:|sendRedirect|res\.redirect)/ nocase
+        $safe  = /(wp_safe_redirect|wp_validate_redirect|allowed_redirect_hosts)/ nocase
 
     condition:
-        any of ($relay*)
+        filesize < 5MB and ( $read1 or $read2 ) and $redir and not $safe
 }

@@ -1,72 +1,93 @@
-rule Laravel_Obfuscated_PHP
+/* =========================================================
+   Laravel / PHP webshell & backdoor heuristics
+   Per-file prefix: lar_
+   NOTE: removed the original 'filename matches /.../' clause
+   because YARA has no built-in `filename` keyword — that rule
+   would not compile.
+   ========================================================= */
+
+rule lar_obfuscated_php
 {
     meta:
-        description = "Detects obfuscated PHP code common in Laravel web shells"
-        severity = "high"
-        author = "ChatGPT"
+        description = "PHP file using obfuscation primitives commonly seen in shells"
+        category    = "RCE/Malware"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $eval = /eval\s*\(/
-        $base64 = /base64_decode\s*\(/
-        $gz = /gzinflate\s*\(/
-        $rot13 = /str_rot13\s*\(/
-        $strrev = /strrev\s*\(/
+        $eval              = /\beval\s*\(/
+        $base64            = /\bbase64_decode\s*\(/
+        $gz                = /\b(gzinflate|gzuncompress)\s*\(/
+        $rot13             = /\bstr_rot13\s*\(/
+        $strrev            = /\bstrrev\s*\(/
         $preg_replace_eval = /preg_replace\s*\(\s*['"][^'"]*\/e['"]/
 
     condition:
-        uint16(0) == 0x3c3f and 1 of ($eval, $base64, $gz, $rot13, $strrev, $preg_replace_eval)
+        uint16(0) == 0x3f3c and
+        ( $preg_replace_eval or
+          ( $eval and 1 of ($base64, $gz, $rot13, $strrev) ) )
 }
-rule Laravel_WebShell_Common
+
+rule lar_webshell_signatures
 {
     meta:
-        description = "Detects common PHP web shell keywords"
-        severity = "critical"
-        author = "ChatGPT"
+        description = "Known PHP web-shell identifiers combined with command exec primitives"
+        category    = "RCE/Malware"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $s1 = "b374k"
-        $s2 = "r57shell"
-        $s3 = "php shell"
-        $s4 = "Mini Shell"
-        $s5 = "FilesMan"
-        $s6 = /shell_exec\s*\(/
-        $s7 = /system\s*\(/
-        $s8 = /passthru\s*\(/
-        $s9 = /popen\s*\(/
-        $s10 = /proc_open\s*\(/
+        $s1 = "b374k" nocase
+        $s2 = "r57shell" nocase
+        $s3 = "FilesMan" nocase
+        $s4 = "WSO " nocase
+        $s5 = "Mini Shell" nocase
+        $s6 = "c99shell" nocase
+        $e1 = /\bshell_exec\s*\(/
+        $e2 = /\bsystem\s*\(/
+        $e3 = /\bpassthru\s*\(/
+        $e4 = /\bpopen\s*\(/
+        $e5 = /\bproc_open\s*\(/
 
     condition:
-        uint16(0) == 0x3c3f and 2 of ($s1, $s2, $s3, $s4, $s5, $s6, $s7, $s8, $s9, $s10)
+        uint16(0) == 0x3f3c and 1 of ($s*) and 1 of ($e*)
 }
-rule Laravel_Backdoor_Indicators
+
+rule lar_route_closure_dangerous_exec
 {
     meta:
-        description = "Detects suspicious Laravel usage of system-level commands"
-        author = "ChatGPT"
-        severity = "high"
+        description = "Laravel route closure containing eval/system/exec within ~500 bytes — likely backdoor"
+        category    = "Backdoor"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $danger1 = "Illuminate\\Support\\Facades\\Artisan::call("
-        $danger2 = /Route::get\s*\(\s*['"][^'"]*['"]\s*,\s*function\s*\(\)\s*\{.*(eval|system|exec)/s
-        $danger3 = /Artisan::call\s*\(\s*['"]migrate['"]/s
-        $danger4 = /DB::select\s*\(.*(UNION|SELECT|FROM|WHERE)/is
-        $danger5 = /file_put_contents\s*\(.*base64_decode/
+        $route_closure = /Route::(get|post|any|match|put|patch|delete)\s*\([^)]{0,200}function\s*\([^)]*\)\s*\{/ nocase
+        $exec          = /\b(eval|system|exec|shell_exec|passthru|proc_open)\s*\(/
 
     condition:
-        any of ($danger*)
+        filesize < 5MB and $route_closure and $exec and
+        for any i in (1..#exec) : (
+            for any j in (1..#route_closure) : (
+                @exec[i] > @route_closure[j] and
+                @exec[i] < @route_closure[j] + 500
+            )
+        )
 }
-rule Laravel_Storage_Backdoor
+
+rule lar_php_dropper_writes_php_file
 {
     meta:
-        description = "Detects PHP code placed in Laravel storage/public folders"
-        author = "ChatGPT"
-        severity = "critical"
+        description = "PHP file that writes another PHP file from base64 — common dropper pattern"
+        category    = "Backdoor"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $php_tag = "<?php"
-        $eval = "eval("
-        $shell = "cmd.php"
+        $fpc     = /file_put_contents\s*\([^)]{0,200}\.php['"]/ nocase
+        $b64     = /base64_decode\s*\(/
+        $fpc_b64 = /file_put_contents\s*\([^)]{0,200}base64_decode/ nocase
 
     condition:
-        (filename matches /.*(storage|public).*\.php$/i) and $php_tag and any of ($eval, $shell)
+        uint16(0) == 0x3f3c and ( $fpc_b64 or ( $fpc and $b64 ) )
 }

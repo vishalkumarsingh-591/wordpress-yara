@@ -1,175 +1,136 @@
-rule WP_Malicious_Eval_Base64
+/* =========================================================
+   WordPress malware / shell / backdoor threats
+   Per-file prefix: wpt_
+   ========================================================= */
+
+rule wpt_eval_base64_pattern
 {
     meta:
-        description = "Detect eval(base64_decode(...)) pattern"
-        category = "malware"
-        severity = "high"
+        description = "Classic eval(base64_decode(...)) malware pattern"
+        category    = "Malware"
+        severity    = "critical"
+        confidence  = "high"
+
     strings:
-        $a = "eval(base64_decode("
-        $b = /eval\s*\(\s*base64_decode\s*\(\s*.{1,1000}\s*\)\s*\)/
+        $a = "eval(base64_decode(" nocase
+        $b = /eval\s*\(\s*base64_decode\s*\(/ nocase
+
     condition:
-        any of them
+        filesize < 10MB and ( $a or $b )
 }
 
-rule WP_Shell_Patterns
+rule wpt_eval_assert_on_superglobal
 {
     meta:
-        description = "Common webshell PHP function patterns"
-        severity = "high"
-        category = "webshell"
+        description = "eval/assert called with value taken straight from $_POST/$_GET/$_REQUEST"
+        category    = "Backdoor"
+        severity    = "critical"
+        confidence  = "high"
+
     strings:
-        $shell_exec = "shell_exec("
-        $popen = "popen("
-        $proc_open = "proc_open("
-        $system = "system("
-        $exec = "exec("
-        $passthru = "passthru("
+        $b1 = /\beval\s*\(\s*\$_(POST|GET|REQUEST|COOKIE)\s*\[/ nocase
+        $b2 = /\bassert\s*\(\s*\$_(POST|GET|REQUEST|COOKIE)\s*\[/ nocase
+
     condition:
-        any of them
+        filesize < 10MB and any of ($b*)
 }
 
-rule WP_Backdoor_Variables
+rule wpt_theme_creates_hidden_admin_user
 {
     meta:
-        description = "Suspicious use of $_POST or $_REQUEST with eval/exec"
-        category = "backdoor"
-        severity = "high"
+        description = "Theme/plugin creates user with administrator role and adds to blog — backdoor"
+        category    = "Backdoor"
+        severity    = "critical"
+        confidence  = "high"
+
     strings:
-        $post = /eval\s*\(\s*\$_(POST|REQUEST)\[.{1,40}\]\s*\)/
-        $get = /assert\s*\(\s*\$_(GET|POST)\[.{1,40}\]\s*\)/
+        $a = "wp_create_user(" nocase
+        $b = "user_pass" nocase
+        $c = "add_user_to_blog(" nocase
+        $d = /['"]administrator['"]/
+
     condition:
-        any of them
+        filesize < 10MB and all of them
 }
 
-rule WP_Obfuscated_Long_Strings
+rule wpt_wp_config_db_credentials_present
 {
     meta:
-        description = "Suspiciously long base64-like string"
-        severity = "medium"
-        category = "obfuscation"
-    strings:
-        $longstring = /[A-Za-z0-9+\/=]{300,600}/
-    condition:
-        $longstring
-}
-
-rule WP_Theme_Backdoor_Hidden_Admin
-{
-    meta:
-        description = "Hidden admin user creation in themes"
-        category = "backdoor"
-        severity = "high"
-    strings:
-        $a = "wp_create_user"
-        $b = "user_pass"
-        $c = "add_user_to_blog"
-        $d = "administrator"
-    condition:
-        all of them
-}
-
-rule WP_DB_Credentials_In_Config
-{
-    meta:
-        description = "Detect hard-coded DB credentials in wp-config.php"
-        severity = "high"
-        author = "ChatGPT"
+        description = "wp-config.php with DB_NAME, DB_USER, DB_PASSWORD, DB_HOST literals — flag if committed to VCS"
+        category    = "Config/Secret"
+        severity    = "medium"
+        confidence  = "high"
 
     strings:
-        // MySQL constants in wp-config.php
         $name = /define\s*\(\s*['"]DB_NAME['"]\s*,\s*['"][^'"]+['"]\s*\)/
         $user = /define\s*\(\s*['"]DB_USER['"]\s*,\s*['"][^'"]+['"]\s*\)/
-        $pass = /define\s*\(\s*['"]DB_PASSWORD['"]\s*,\s*['"][^'"]*['"]\s*\)/
+        $pass = /define\s*\(\s*['"]DB_PASSWORD['"]\s*,\s*['"][^'"]+['"]\s*\)/
         $host = /define\s*\(\s*['"]DB_HOST['"]\s*,\s*['"][^'"]+['"]\s*\)/
+
     condition:
-        all of them
+        filesize < 2MB and all of them
 }
 
-rule WP_Unsanitized_SQL_Functions
+rule wpt_mysql_query_with_php_variable
 {
     meta:
-        description = "Detect direct use of mysql_query()/mysqli_query() without prepare"
-        severity = "medium"
-        author = "ChatGPT"
+        description = "mysql_query / mysqli_query containing a PHP variable interpolation — likely concat SQL"
+        category    = "SQLi"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $mysql = /mysql_query\s*\(/
-        $mysqli = /mysqli_query\s*\(.*\$.*\)/
+        $mysql_var  = /mysql_query\s*\([^)]*\$\w+/ nocase
+        $mysqli_var = /mysqli_query\s*\([^)]*\$\w+/ nocase
+
     condition:
-        any of ($mysql, $mysqli)
+        filesize < 10MB and ( $mysql_var or $mysqli_var )
 }
 
-rule WP_SQL_Concat_From_Input
+rule wpt_wpdb_unprepared_concat_variable
 {
     meta:
-        description = "Detect simple concatenation of $_GET/$_POST into SQL strings"
-        severity = "high"
-        author = "ChatGPT"
+        description = "$wpdb->query / get_results passed a string literal that contains a PHP variable (no prepare)"
+        category    = "SQLi"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        // look for quotes + dot + superglobal
-        $in1 = /['"].*\.\s*\$_(GET|POST)\['[A-Za-z0-9_]+']\s*\.\s*['"]/
-        $in2 = /\$_(GET|POST)\['[A-Za-z0-9_]+']\s*\.\s*["'].*["']/
+        $q1 = /\$wpdb->query\s*\(\s*['"][^'"]*\$\w+[^'"]*['"]\s*\)/
+        $q2 = /\$wpdb->get_results\s*\(\s*['"][^'"]*\$\w+[^'"]*['"]\s*\)/
+        $q3 = /\$wpdb->get_row\s*\(\s*['"][^'"]*\$\w+[^'"]*['"]\s*\)/
+
     condition:
-        any of ($in1, $in2)
+        filesize < 10MB and any of ($q*)
 }
 
-rule PHP_Possible_SQL_Injection_String_Interpolation
+rule wpt_php_lfi_via_superglobal
 {
     meta:
-        description = "Detects possible SQL injection via PHP variable interpolation in SQL query"
-        author = "Security Research"
-        date = "2026-03-11"
-        severity = "medium"
+        description = "include/require taking $_GET/$_POST/$_REQUEST directly"
+        category    = "LFI/RFI"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $sql1 = "SELECT "
-        $sql2 = "LEFT JOIN"
-        $sql3 = "WHERE"
-        $var1 = "$url"
-        $var2 = "$_GET"
-        $var3 = "$_POST"
-        $pattern = "= '$"
+        $i1 = /\binclude(_once)?\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)/ nocase
+        $i2 = /\brequire(_once)?\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)/ nocase
 
     condition:
-        any of ($sql*) and any of ($var*) and $pattern
+        filesize < 10MB and any of ($i*)
 }
 
-rule WP_WPDB_Unprepared
+rule wpt_js_eval_with_dynamic_arg
 {
     meta:
-        description = "Detect use of $wpdb->query() or get_results() with concatenation"
-        severity = "high"
-        author = "ChatGPT"
+        description = "JavaScript eval() called with a variable / dynamic argument (not a string literal)"
+        category    = "JS/Eval"
+        severity    = "high"
+        confidence  = "low"
 
     strings:
-        $query = /\$wpdb->query\s*\(\s*['"].*\$.*['"]\s*\)/
-        $results = /\$wpdb->get_results\s*\(\s*['"].*\$.*['"]\s*\)/
-    condition:
-        any of ($query, $results)
-}
+        $eval_var = /\beval\s*\(\s*[A-Za-z_]\w*/
 
-rule js_vulnerable_eval
-{
-    meta:
-        description = "Detects use of eval() in JavaScript"
-        severity = "high"
-    strings:
-        $eval = /eval\s*\(.*\);/i
     condition:
-        $eval
-}
-
-rule LFI_Pattern_PHP
-{
-    meta:
-        description = "Detects possible LFI using user input in include/require"
-        severity = "critical"
-    strings:
-        $include = /include\s*\(\s*\$_(GET|POST|REQUEST)/
-        $require = /require\s*\(\s*\$_(GET|POST|REQUEST)/
-        $inc_once = /include_once\s*\(\s*\$_(GET|POST|REQUEST)/
-        $req_once = /require_once\s*\(\s*\$_(GET|POST|REQUEST)/
-    condition:
-        any of them
+        filesize < 5MB and $eval_var
 }
