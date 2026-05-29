@@ -1,216 +1,176 @@
-/************************************************************
- * supply-chain-wordpress.yar
- * WordPress plugin & theme supply-chain attack detection
- * Scope: wp-content/plugins, wp-content/themes
- ************************************************************/
+/* =========================================================
+   WordPress plugin/theme supply-chain attacks
+   Per-file prefix: sup_
+   ========================================================= */
 
-rule wp_supply_chain_remote_code_execution
+rule sup_remote_fetch_then_execute
 {
     meta:
-        description = "Plugin/theme downloads remote content and executes it"
-        category = "SUPPLY_CHAIN"
-        severity = "critical"
-        confidence = "high"
+        description = "Plugin/theme fetches remote payload and feeds it to eval/assert/system"
+        category    = "SupplyChain/RCE"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        /* Remote fetch */
-        $fetch1 = "wp_remote_get("
-        $fetch2 = "wp_remote_post("
+        $fetch1 = "wp_remote_get(" nocase
+        $fetch2 = "wp_remote_post(" nocase
         $fetch3 = "file_get_contents("
-        $fetch4 = "curl_init("
-        $fetch5 = "curl "
-        $fetch6 = "wget "
-
-        /* Execution */
-        $exec1 = "eval("
-        $exec2 = "assert("
-        $exec3 = "shell_exec("
-        $exec4 = "exec("
-        $exec5 = "system("
+        $fetch4 = "curl_exec("
+        $exec1  = /\beval\s*\(/
+        $exec2  = /\bassert\s*\(/
+        $exec3  = /\bshell_exec\s*\(/
+        $exec4  = /\bexec\s*\(/
+        $exec5  = /\bsystem\s*\(/
 
     condition:
-        filesize < 10MB
-        and any of ($fetch*)
-        and any of ($exec*)
+        filesize < 10MB and any of ($fetch*) and any of ($exec*)
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_obfuscated_payload_dropper
+rule sup_obfuscated_payload_dropper
 {
     meta:
-        description = "Obfuscated payload used to drop or modify plugin files"
-        category = "SUPPLY_CHAIN"
-        severity = "high"
-        confidence = "high"
+        description = "Multiple obfuscation primitives combined with file_put_contents/fopen"
+        category    = "SupplyChain/Dropper"
+        severity    = "high"
+        confidence  = "high"
 
     strings:
-        $obf1 = "base64_decode("
-        $obf2 = "gzinflate("
-        $obf3 = "gzuncompress("
-        $obf4 = "str_rot13("
-        $write1 = "file_put_contents("
-        $write2 = "fopen("
+        $obf1   = /base64_decode\s*\(/
+        $obf2   = /gzinflate\s*\(/
+        $obf3   = /gzuncompress\s*\(/
+        $obf4   = /str_rot13\s*\(/
+        $write1 = /file_put_contents\s*\(/
+        $write2 = /fopen\s*\(/
 
     condition:
-        filesize < 10MB
-        and 2 of ($obf*)
-        and any of ($write*)
+        filesize < 10MB and 2 of ($obf*) and any of ($write*)
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_external_update_server
+rule sup_external_update_server
 {
     meta:
-        description = "Plugin implements update logic using external server"
-        category = "SUPPLY_CHAIN"
-        severity = "high"
-        confidence = "medium"
+        description = "Plugin overrides update transient and fetches HTTP(S) URL"
+        category    = "SupplyChain/Update"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $update1 = "pre_set_site_transient_update_plugins"
-        $update2 = "set_site_transient('update_plugins'"
-        $update3 = "plugins_api"
-        $remote  = /(http:\/\/|https:\/\/)/i
+        $update1 = "pre_set_site_transient_update_plugins" nocase
+        $update2 = /set_site_transient\s*\(\s*['"]update_plugins['"]/ nocase
+        $update3 = "plugins_api_result" nocase
+        $remote_get = /wp_remote_(get|post)\s*\(\s*['"]https?:\/\//i
 
     condition:
-        filesize < 10MB
-        and any of ($update*)
-        and $remote
+        filesize < 10MB and any of ($update*) and $remote_get
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_external_zip_install
+rule sup_external_zip_download_install
 {
     meta:
-        description = "Plugin downloads and extracts ZIP from external URL"
-        category = "SUPPLY_CHAIN"
-        severity = "critical"
-        confidence = "high"
+        description = "Plugin downloads ZIP from arbitrary URL and unzips it"
+        category    = "SupplyChain/ZIP"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $download = "download_url("
-        $unzip1   = "unzip_file("
-        $unzip2   = "ZipArchive"
-        $remote   = /(http:\/\/|https:\/\/)/i
+        $download = "download_url(" nocase
+        $unzip1   = "unzip_file(" nocase
+        $unzip2   = "ZipArchive" nocase
+        $remote   = /https?:\/\//
 
     condition:
-        filesize < 10MB
-        and $download
-        and any of ($unzip*)
-        and $remote
+        filesize < 10MB and $download and any of ($unzip*) and $remote
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_hidden_admin_creation
+rule sup_hidden_admin_user_creation
 {
     meta:
-        description = "Plugin silently creates or elevates administrator user"
-        category = "SUPPLY_CHAIN"
-        severity = "critical"
-        confidence = "high"
+        description = "Creates user and assigns administrator role / wp_capabilities directly"
+        category    = "SupplyChain/Backdoor"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $user1 = "wp_create_user("
-        $user2 = "wp_insert_user("
-        $meta  = "update_user_meta("
-        $role1 = "'administrator'"
-        $role2 = "\"administrator\""
-        $caps  = "wp_capabilities"
+        $user1 = "wp_create_user(" nocase
+        $user2 = "wp_insert_user(" nocase
+        $meta  = "update_user_meta(" nocase
+        $role1 = /['"]administrator['"]/
+        $caps  = /['"]wp_capabilities['"]/
 
     condition:
-        filesize < 10MB
-        and ( any of ($user*) or $meta )
-        and ( any of ($role*) or $caps )
+        filesize < 10MB and
+        ( any of ($user1, $user2) or ( $meta and $caps ) ) and
+        ( $role1 or $caps )
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_vendor_folder_backdoor
+rule sup_vendor_folder_contains_exec
 {
     meta:
-        description = "Executable backdoor logic inside vendor directory"
-        category = "SUPPLY_CHAIN"
-        severity = "high"
-        confidence = "medium"
+        description = "Executable backdoor logic inside /vendor/ subtree"
+        category    = "SupplyChain/Backdoor"
+        severity    = "high"
+        confidence  = "low"
 
     strings:
         $vendor = "/vendor/"
-        $exec1  = "eval("
-        $exec2  = "shell_exec("
-        $exec3  = "system("
-        $exec4  = "exec("
+        $exec1  = /\beval\s*\(/
+        $exec2  = /\bshell_exec\s*\(/
+        $exec3  = /\bsystem\s*\(/
+        $exec4  = /\bproc_open\s*\(/
 
     condition:
-        filesize < 10MB
-        and $vendor
-        and any of ($exec*)
+        filesize < 10MB and $vendor and any of ($exec*)
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_typosquatted_library
+rule sup_typosquatted_library
 {
     meta:
-        description = "Possible typosquatted bundled PHP library"
-        category = "SUPPLY_CHAIN"
-        severity = "medium"
-        confidence = "heuristic"
+        description = "Possible typosquatted bundled PHP library name"
+        category    = "SupplyChain/Typosquat"
+        severity    = "medium"
+        confidence  = "low"
 
     strings:
-        $lib1 = "phmialer"
-        $lib2 = "monologg"
-        $lib3 = "sympfony"
-        $lib4 = "guzzel"
-        $lib5 = "reqeust"
+        $lib1 = "phmialer" nocase
+        $lib2 = "monologg" nocase
+        $lib3 = "sympfony" nocase
+        $lib4 = "guzzel" nocase
+        $lib5 = "reqeust" nocase
 
     condition:
-        filesize < 5MB
-        and any of ($lib*)
+        filesize < 5MB and any of ($lib*)
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_activation_time_execution
+rule sup_activation_hook_runs_exec
 {
     meta:
-        description = "Dangerous code executed during plugin activation"
-        category = "SUPPLY_CHAIN"
-        severity = "medium"
-        confidence = "medium"
+        description = "register_activation_hook handler contains exec/system or writes files"
+        category    = "SupplyChain/Activation"
+        severity    = "medium"
+        confidence  = "medium"
 
     strings:
-        $activate = "register_activation_hook("
-        $exec1 = "exec("
-        $exec2 = "shell_exec("
-        $exec3 = "system("
-        $write = "file_put_contents("
+        $activate = "register_activation_hook(" nocase
+        $exec1    = /\bexec\s*\(/
+        $exec2    = /\bshell_exec\s*\(/
+        $exec3    = /\bsystem\s*\(/
+        $write    = /file_put_contents\s*\(/
 
     condition:
-        filesize < 10MB
-        and $activate
-        and ( any of ($exec*) or $write )
+        filesize < 10MB and $activate and ( any of ($exec*) or $write )
 }
 
-/* ------------------------------------------------------ */
-
-rule wp_supply_chain_remote_include
+rule sup_include_remote_url
 {
     meta:
-        description = "Remote file inclusion in plugin/theme code"
-        category = "SUPPLY_CHAIN"
-        severity = "critical"
-        confidence = "high"
+        description = "include/require called on http(s):// URL literal"
+        category    = "SupplyChain/RFI"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $include = /(include|require)(_once)?\s*\(/i
-        $remote  = /(http:\/\/|https:\/\/)/i
+        $rfi = /(include|require)(_once)?\s*\(\s*['"]https?:\/\//i
 
     condition:
-        filesize < 10MB
-        and $include
-        and $remote
+        filesize < 10MB and $rfi
 }

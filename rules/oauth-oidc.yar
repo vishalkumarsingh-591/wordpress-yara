@@ -1,284 +1,180 @@
 /* =========================================================
-   OAuth / OIDC Vulnerability Detection Rules
+   OAuth / OIDC vulnerability detection
+   Per-file prefix: oidc_
    ========================================================= */
 
-
-/* ---------------------------------------------------------
-   OAuth State Parameter Issues
-   --------------------------------------------------------- */
-
-rule OAuth_Missing_State_Parameter
+rule oidc_authorize_url_missing_state
 {
     meta:
-        description = "OAuth authorize URL without state parameter"
-        category = "OAuth"
-        severity = "high"
+        description = "Authorize URL built with response_type=code but no 'state' parameter anywhere"
+        category    = "OAuth/CSRF"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $auth = /authorize\?[^'"]*response_type=code[^'"]*client_id=/i
-        $state = "state="
+        $auth_url   = /authorize\?[^'"]{0,300}response_type=code[^'"]{0,300}client_id=/ nocase
+        $build_url1 = /add_query_arg\s*\([^)]{0,500}response_type[^)]{0,500}client_id/ nocase
+        $build_url2 = /http_build_query\s*\([^)]{0,500}response_type[^)]{0,500}client_id/ nocase
+        $state      = "state=" nocase
+        $state_arr  = /['"]state['"]\s*=>/ nocase
 
     condition:
-        filesize < 2MB and $auth and not $state
+        filesize < 5MB and
+        ( $auth_url or $build_url1 or $build_url2 ) and
+        not $state and not $state_arr
 }
 
-
-
-rule OAuth_Missing_State_Validation
+rule oidc_callback_no_state_read
 {
     meta:
-        description = "OAuth callback without state validation"
-        category = "OAuth"
-        severity = "high"
+        description = "OAuth callback handler reads 'code' but never reads 'state' from request/session"
+        category    = "OAuth/CSRF"
+        severity    = "high"
+        confidence  = "low"
 
     strings:
-        $callback = /(callback|redirect_uri|oauth_callback)/i
-        $state = /\$_(GET|POST|REQUEST)\[['"]state['"]\]/i
+        $exchange    = /grant_type\s*=\s*['"]?authorization_code/ nocase
+        $code_read   = /\$_(GET|POST|REQUEST)\s*\[\s*['"]code['"]\s*\]/ nocase
+        $state_read  = /\$_(GET|POST|REQUEST|SESSION|COOKIE)\s*\[\s*['"]state['"]\s*\]/ nocase
+        $state_trans = /get_transient\s*\(\s*[^)]*state/ nocase
 
     condition:
-        filesize < 2MB and $callback and not $state
+        filesize < 5MB and ( $exchange or $code_read ) and
+        not $state_read and not $state_trans
 }
 
-
-
-/* ---------------------------------------------------------
-   OAuth Account Linking Issues
-   --------------------------------------------------------- */
-
-rule OAuth_Email_Only_Acceptance
+rule oidc_login_user_lookup_by_email_only
 {
     meta:
-        description = "OAuth login using email only"
-        category = "OAuth"
-        severity = "high"
+        description = "OAuth/OIDC handler logs user in by email lookup with no UID/sub matching"
+        category    = "OAuth/AuthBypass"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $email = /get_user_by\s*\(\s*['"]email['"]\s*,/i
-        $token = /(access_token|id_token)/i
+        $tok      = /\$(access_token|id_token|userinfo)\b/ nocase
+        $by_email = /get_user_by\s*\(\s*['"]email['"]\s*,/ nocase
+        $login    = /(wp_set_auth_cookie|wp_signon|wp_set_current_user)\s*\(/ nocase
+        $by_sub   = /get_user_by\s*\(\s*['"](id|login)['"]\s*,/ nocase
+        $meta_sub = /get_user_meta\s*\([^)]*['"](oauth_sub|oidc_sub|external_id)['"]/ nocase
 
     condition:
-        filesize < 10MB and $email and $token
+        filesize < 10MB and $tok and $by_email and $login and
+        not $by_sub and not $meta_sub
 }
 
-
-
-/* ---------------------------------------------------------
-   Token Leakage
-   --------------------------------------------------------- */
-
-rule OAuth_Token_Leakage_In_URL
+rule oidc_token_value_leaked_to_log_or_url
 {
     meta:
-        description = "OAuth token leaked in URL or logs"
-        category = "OAuth"
-        severity = "high"
+        description = "Token variable concatenated into URL/log/redirect"
+        category    = "OAuth/Leakage"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $token = /(access_token=|id_token=|refresh_token=)/i
-        $sink  = /(wp_redirect|header\(|error_log|print_r|var_dump|echo )/i
+        $tok_qs    = /[?&](access_token|id_token|refresh_token)=\$/ nocase
+        $sink_log  = /(error_log|var_dump|print_r|var_export)\s*\(\s*\$(access_token|id_token|refresh_token)/ nocase
+        $sink_echo = /echo\s+\$(access_token|id_token|refresh_token)\b/ nocase
 
     condition:
-        filesize < 2MB and $token and $sink
+        filesize < 5MB and ( $tok_qs or $sink_log or $sink_echo )
 }
 
-
-
-/* ---------------------------------------------------------
-   PKCE Issues
-   --------------------------------------------------------- */
-
-rule OAuth_Missing_PKCE
+rule oidc_authorize_request_missing_pkce
 {
     meta:
-        description = "OAuth authorization request without PKCE"
-        category = "OAuth"
-        severity = "high"
+        description = "Authorize URL with response_type=code but no code_challenge (PKCE)"
+        category    = "OAuth/PKCE"
+        severity    = "medium"
+        confidence  = "low"
 
     strings:
-        $auth = /authorize\?[^'"]*response_type=code/i
-        $pkce1 = "code_challenge="
-        $pkce2 = "code_verifier="
+        $auth_url      = /authorize\?[^'"]{0,300}response_type=code/ nocase
+        $challenge     = "code_challenge=" nocase
+        $challenge_arr = /['"]code_challenge['"]\s*=>/ nocase
 
     condition:
-        filesize < 2MB and $auth and not any of ($pkce*)
+        filesize < 5MB and $auth_url and not $challenge and not $challenge_arr
 }
 
-
-
-/* ---------------------------------------------------------
-   Redirect URI Vulnerabilities
-   --------------------------------------------------------- */
-
-rule OAuth_Open_Redirect_URI
+rule oidc_redirect_uri_from_user_input
 {
     meta:
-        description = "Dynamic redirect_uri in OAuth flow"
-        category = "OAuth"
-        severity = "high"
+        description = "redirect_uri OAuth parameter set directly from $_GET/$_POST/$_REQUEST"
+        category    = "OAuth/OpenRedirect"
+        severity    = "high"
+        confidence  = "high"
 
     strings:
-        $redirect1 = /redirect_uri=\$_(GET|POST|REQUEST)/i
-        $redirect2 = /redirect_uri\s*=\s*\$_(GET|POST|REQUEST)/i
+        $r1 = /['"]redirect_uri['"]\s*(=>|:)\s*\$_(GET|POST|REQUEST)/ nocase
+        $r2 = /redirect_uri\s*=\s*\$_(GET|POST|REQUEST)\s*\[/ nocase
 
     condition:
-        filesize < 2MB and any of ($redirect*)
+        filesize < 5MB and any of ($r*)
 }
 
-
-
-/* ---------------------------------------------------------
-   Token Storage Issues
-   --------------------------------------------------------- */
-
-rule OAuth_Token_Stored_Insecurely
+rule oidc_client_secret_hardcoded
 {
     meta:
-        description = "OAuth access token stored insecurely"
-        category = "OAuth"
-        severity = "medium"
+        description = "OAuth client_secret hardcoded as a literal in source"
+        category    = "OAuth/Secret"
+        severity    = "high"
+        confidence  = "medium"
 
     strings:
-        $token = /(access_token|refresh_token)/i
-        $store1 = /(update_option|set_transient|session\[|INSERT INTO)/i
+        $secret_assign = /['"]client_secret['"]\s*(=>|:)\s*['"][A-Za-z0-9_\-\.~]{20,}['"]/ nocase
+        $secret_var    = /\$client_secret\s*=\s*['"][A-Za-z0-9_\-\.~]{20,}['"]/ nocase
 
     condition:
-        filesize < 5MB and $token and $store1
+        filesize < 5MB and ( $secret_assign or $secret_var )
 }
 
-
-
-/* ---------------------------------------------------------
-   Client Secret Exposure
-   --------------------------------------------------------- */
-
-rule OAuth_Client_Secret_Exposure
+rule oidc_implicit_flow_response_type_token
 {
     meta:
-        description = "OAuth client secret hardcoded"
-        category = "OAuth"
-        severity = "high"
+        description = "OAuth implicit flow (response_type=token) — deprecated"
+        category    = "OAuth/Flow"
+        severity    = "medium"
+        confidence  = "high"
 
     strings:
-        $secret1 = /client_secret\s*=\s*['"][A-Za-z0-9\-_]{20,}['"]/i
-        $secret2 = /"client_secret"\s*:\s*"[^"]+"/i
+        $impl = /response_type=(token|id_token\s+token|token\s+id_token)/ nocase
 
     condition:
-        filesize < 2MB and any of ($secret*)
+        filesize < 5MB and $impl
 }
 
-
-
-/* ---------------------------------------------------------
-   OAuth Flow Issues
-   --------------------------------------------------------- */
-
-rule OAuth_Implicit_Flow_Usage
+rule oidc_id_token_no_signature_verification
 {
     meta:
-        description = "OAuth implicit flow usage"
-        category = "OAuth"
-        severity = "medium"
+        description = "ID token split & base64-decoded manually without openssl_verify / JWT lib verify"
+        category    = "OIDC/SigVerify"
+        severity    = "critical"
+        confidence  = "medium"
 
     strings:
-        $implicit = /response_type=token/i
+        $explode_jwt = /explode\s*\(\s*['"]\.['"]\s*,\s*\$(id_token|jwt|token)\b/ nocase
+        $b64_decode  = /base64_decode\s*\(\s*\$(parts|header|payload|segments)/ nocase
+        $verify_ossl = /openssl_verify\s*\(/ nocase
+        $verify_lib  = /(JWT::decode|Firebase\\JWT\\JWT::decode|jwt[._]decode)/ nocase
+        $verify_jwks = /(jwks|JwkSet|getPublicKey)/ nocase
 
     condition:
-        filesize < 2MB and $implicit
+        filesize < 5MB and ( $explode_jwt or $b64_decode ) and
+        not $verify_ossl and not $verify_lib and not $verify_jwks
 }
 
-
-
-rule OAuth_Code_Leak_In_URL
+rule oidc_token_endpoint_over_http
 {
     meta:
-        description = "OAuth authorization code exposed in logs"
-        category = "OAuth"
-        severity = "medium"
+        description = "OAuth/OIDC token / userinfo / introspect endpoint URL using plain HTTP"
+        category    = "OAuth/Transport"
+        severity    = "critical"
+        confidence  = "high"
 
     strings:
-        $code = /(code=)/i
-        $sink = /(echo|print_r|var_dump|error_log)/i
+        $http_tok = /http:\/\/[^\s'"<>]+\/(token|userinfo|introspect)/ nocase
 
     condition:
-        filesize < 2MB and $code and $sink
-}
-
-
-
-/* ---------------------------------------------------------
-   OIDC Specific Vulnerabilities
-   --------------------------------------------------------- */
-
-rule OIDC_Missing_Nonce
-{
-    meta:
-        description = "OIDC request missing nonce parameter"
-        category = "OIDC"
-        severity = "high"
-
-    strings:
-        $auth = /authorize\?[^'"]*openid/i
-        $nonce = "nonce="
-
-    condition:
-        filesize < 2MB and $auth and not $nonce
-}
-
-
-
-rule OIDC_Missing_IDToken_Verification
-{
-    meta:
-        description = "OIDC ID Token accepted without validation"
-        category = "OIDC"
-        severity = "critical"
-
-    strings:
-        $idtoken = "id_token"
-        $decode = /(jwt_decode|decode\()/i
-        $verify = /(verify|validate).*id_token/i
-
-    condition:
-        filesize < 2MB and $idtoken and $decode and not $verify
-}
-
-
-
-/* ---------------------------------------------------------
-   Token Validation Issues
-   --------------------------------------------------------- */
-
-rule OAuth_Missing_Audience_Check
-{
-    meta:
-        description = "OAuth token audience not validated"
-        category = "OAuth"
-        severity = "high"
-
-    strings:
-        $aud = /(audience|aud)/i
-        $validate = /(validateAudience|verifyAudience)/i
-
-    condition:
-        filesize < 2MB and $aud and not $validate
-}
-
-
-
-/* ---------------------------------------------------------
-   Transport Security
-   --------------------------------------------------------- */
-
-rule OAuth_Insecure_HTTP_Endpoint
-{
-    meta:
-        description = "OAuth token endpoint using HTTP"
-        category = "OAuth"
-        severity = "critical"
-
-    strings:
-        $http = /http:\/\/[^'"]*\/token/i
-
-    condition:
-        filesize < 2MB and $http
+        filesize < 5MB and $http_tok
 }
