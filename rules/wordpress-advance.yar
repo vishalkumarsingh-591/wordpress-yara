@@ -529,3 +529,44 @@ rule wpa_meta_refresh_with_input
     condition:
         filesize < 10MB and $meta
 }
+
+rule OAuth_ProfileCompletion_EmailSelection
+{
+    meta:
+        description = "Possible account selection from attacker-controlled email"
+
+    strings:
+        $post = "email_field"
+        $user1 = "get_user_by("
+        $user2 = "email_exists("
+        $auth1 = "wp_set_auth_cookie("
+        $auth2 = "wp_signon("
+        $auth3 = "wp_set_current_user("
+
+    condition:
+        $post and
+        1 of ($user*) and
+        1 of ($auth*)
+}
+
+rule WeakOTPHash
+{
+    strings:
+        $sha = "sha512"
+        $otp = "otp"
+        $cust = "customer_key"
+
+    condition:
+        all of them
+}
+
+rule SmallOTPRange
+{
+    strings:
+        $rand1 = "wp_rand(1000,99999)"
+        $rand2 = "wp_rand(1000, 99999)"
+        $rand3 = "rand(1000,99999)"
+
+    condition:
+        any of them
+}

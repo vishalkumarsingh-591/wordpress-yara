@@ -134,3 +134,55 @@ rule saml_relaystate_unvalidated_redirect
     condition:
         filesize < 5MB and ( $read1 or $read2 ) and $redir and not $safe
 }
+
+rule WP_SAML_Certificate_Poisoning
+{
+    meta:
+        description = "Detects potential SAML certificate poisoning before signature verification"
+        author = "OpenAI"
+        severity = "high"
+
+    strings:
+        $opt1 = "mo_saml_required_certificate"
+        $opt2 = "saml_x509_certificate"
+
+        $update1 = "update_option("
+        $update2 = "add_option("
+        $update3 = "update_site_option("
+
+        $cert1 = "getX509Certificate("
+        $cert2 = "getCertificate("
+        $cert3 = "X509Certificate"
+        $cert4 = "retrieveCertificate"
+
+    condition:
+        $opt1 and
+        1 of ($update*) and
+        1 of ($cert*)
+}
+
+rule WP_Admin_Action_Without_Nonce
+{
+    meta:
+        description = "Potential admin action protected only by capability check"
+
+    strings:
+        $cap1 = "current_user_can("
+        $cap2 = "manage_options"
+
+        $nonce1 = "check_admin_referer("
+        $nonce2 = "wp_verify_nonce("
+        $nonce3 = "check_ajax_referer("
+
+        $req1 = "$_REQUEST"
+        $req2 = "$_GET"
+        $req3 = "$_POST"
+
+        $token = "mo_saml_mint_test_token"
+
+    condition:
+        $cap1 and
+        $cap2 and
+        $token and
+        1 of ($req*)
+}
