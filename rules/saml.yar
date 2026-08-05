@@ -156,7 +156,7 @@ rule WP_SAML_Certificate_Poisoning
         $cert4 = "retrieveCertificate"
 
     condition:
-        $opt1 and
+        any of ($opt*) and
         1 of ($update*) and
         1 of ($cert*)
 }
@@ -169,10 +169,6 @@ rule WP_Admin_Action_Without_Nonce
     strings:
         $cap1 = "current_user_can("
         $cap2 = "manage_options"
-
-        $nonce1 = "check_admin_referer("
-        $nonce2 = "wp_verify_nonce("
-        $nonce3 = "check_ajax_referer("
 
         $req1 = "$_REQUEST"
         $req2 = "$_GET"
