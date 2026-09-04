@@ -182,3 +182,19 @@ rule WP_Admin_Action_Without_Nonce
         $token and
         1 of ($req*)
 }
+
+rule PHP_Tautology_Redundant_Condition
+{
+    meta:
+        description = "Detects a tautological/redundant PHP condition"
+        author = "Security Assessment"
+        severity = "Low"
+        category = "Tautology"
+
+    strings:
+        $condition =
+            /['"]username['"]\s*===\s*\$[A-Za-z_][A-Za-z0-9_]*\s*&&\s*username_exists\s*\(\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\)\s*\|\|\s*username_exists\s*\(\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\)/
+
+    condition:
+        $condition
+}
